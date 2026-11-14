@@ -6,6 +6,11 @@ import httpx
 import re
 import secrets
 import streamlit as st
+
+# Streamlit 1.62 이상에서 제거된 st.cache 호환성 처리
+if not hasattr(st, "cache"):
+    st.cache = st.cache_data
+
 from supabase import create_client
 from streamlit_cookies_manager import EncryptedCookieManager
 
