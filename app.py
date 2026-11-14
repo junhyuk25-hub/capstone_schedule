@@ -3,6 +3,7 @@ from html import escape
 from time import sleep
 from types import SimpleNamespace
 import httpx
+import re
 import secrets
 import streamlit as st
 from supabase import create_client
@@ -442,6 +443,80 @@ def save_auth_session(auth_response, new_login=False):
         cookies.save()
 
 # ==================================================
+# 로그인·회원가입 이메일 형식 검사
+# ==================================================
+def is_valid_auth_email(email):
+    """이메일의 기본 입력 형식만 검사한다. 최종 유효성은 Supabase가 판단한다."""
+    return (
+        len(email) <= 254
+        and re.fullmatch(r"[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+", email)
+        is not None
+    )
+
+# ==================================================
+# 로그인 오류 메시지 구분
+# ==================================================
+def signin_error_message(error):
+    error_code = getattr(error, "code", None)
+    error_status = getattr(error, "status", None)
+
+    if error_code == "invalid_credentials":
+        return "이메일 또는 비밀번호가 올바르지 않습니다."
+
+    if error_code == "email_not_confirmed":
+        return "이메일 인증이 완료되지 않았습니다. 인증 메일을 확인해주세요."
+
+    if error_code == "over_request_rate_limit" or error_status == 429:
+        return "로그인 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+
+    if (
+        isinstance(error, httpx.RequestError)
+        or error_status in (500, 502, 503, 504)
+        or error_code in ("request_timeout", "unexpected_failure")
+    ):
+        return "서버 연결 또는 인증 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+
+    return "로그인 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+
+
+# ==================================================
+# 회원가입 오류 메시지 구분
+# ==================================================
+def signup_error_message(error):
+    error_code = getattr(error, "code", None)
+    error_status = getattr(error, "status", None)
+
+    if error_code in ("email_exists", "user_already_exists"):
+        return "이미 가입된 이메일입니다."
+
+    if error_code == "weak_password":
+        return "비밀번호가 보안 조건을 충족하지 않습니다. 다른 비밀번호를 입력해주세요."
+
+    if error_code in ("email_address_invalid", "validation_failed"):
+        return "이메일 또는 입력 정보가 올바르지 않습니다. 다시 확인해주세요."
+
+    if error_code == "email_address_not_authorized":
+        return "현재 이메일 발송 설정에서 사용할 수 없는 주소입니다. 관리자에게 문의해주세요."
+
+    if error_code in ("signup_disabled", "email_provider_disabled"):
+        return "현재 이메일 회원가입을 사용할 수 없습니다. 관리자에게 문의해주세요."
+
+    if error_code == "over_email_send_rate_limit":
+        return "인증 이메일 발송 횟수를 초과했습니다. 잠시 후 다시 시도해주세요."
+
+    if error_code == "over_request_rate_limit" or error_status == 429:
+        return "회원가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+
+    if (
+        isinstance(error, httpx.RequestError)
+        or error_status in (500, 502, 503, 504)
+        or error_code in ("request_timeout", "unexpected_failure")
+    ):
+        return "서버 연결 또는 회원가입 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+
+    return "회원가입 처리 중 오류가 발생했습니다. 입력 정보와 인증 설정을 확인해주세요."
+
+# ==================================================
 # 로그인 버튼 클릭 시 인증 처리
 # ==================================================
 def handle_signin():
@@ -453,6 +528,12 @@ def handle_signin():
     if not email or not password:
         st.session_state["signin_feedback"] = (
             "warning", "이메일과 비밀번호를 입력해주세요."
+        )
+        return
+
+    if not is_valid_auth_email(email):
+        st.session_state["signin_feedback"] = (
+            "warning", "올바른 이메일 형식으로 입력해주세요. (예: name@example.com)"
         )
         return
 
@@ -478,91 +559,678 @@ def handle_signin():
         st.session_state["_pending_new_login"] = True
 
 
-    except Exception:
+    except Exception as error:
         clear_login_state()
         st.session_state["signin_feedback"] = (
-            "error",
-            "로그인에 실패했습니다. 이메일 인증 여부와 입력 정보를 확인해주세요."
+            "error", signin_error_message(error)
         )
 def show_login_screen():
-    st.title("📅 학업 일정 관리 시스템")
-    st.caption("로그인하면 본인의 학업 일정만 조회하고 관리할 수 있습니다.")
-    login_tab, signup_tab = st.tabs(["로그인", "회원가입"])
+    # ==================================================
+    # 로그인·회원가입 카드형 UI 디자인
+    # ==================================================
+    st.markdown("""
+    <style>
+    /* 로그인·회원가입 카드 */
+    div[class*="st-key-auth_login_card"],
+    div[class*="st-key-auth_signup_card"] {
+        max-width: 1120px !important;
+        margin: 17px auto 0 !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+        border: 1px solid #d8e5f8 !important;
+        border-radius: 19px !important;
+        box-shadow: 0 7px 25px rgba(26,64,124,.10) !important;
+        overflow: hidden !important;
+    }
+
+    /* 카드 내부 좌우 배치 */
+    div[class*="st-key-auth_login_card"] [data-testid="stHorizontalBlock"],
+    div[class*="st-key-auth_signup_card"] [data-testid="stHorizontalBlock"] {
+        gap: 0 !important;
+        align-items: stretch !important;
+    }
+
+    /* 왼쪽 학사모 이미지 영역 */
+    div[class*="st-key-auth_login_card"] [data-testid="stColumn"]:first-child,
+    div[class*="st-key-auth_signup_card"] [data-testid="stColumn"]:first-child {
+        padding: 28px 20px !important;
+        background: linear-gradient(160deg, #eff6ff, #dceaff) !important;
+        border-right: 1px solid #e0eafb !important;
+    }
+
+    /* 회원가입 카드의 위아래 흰색 여백을 파란색으로 채움 */
+    div[class*="st-key-auth_signup_card"] {
+        background:
+            linear-gradient(160deg, #eff6ff, #dceaff)
+            left top / 37.74% 100% no-repeat,
+            #ffffff !important;
+    }
+
+    /* 기존 파란색 컬럼 배경과 중복되지 않도록 설정 */
+    div[class*="st-key-auth_signup_card"] [data-testid="stColumn"]:first-child {
+        background: transparent !important;
+    }
+
+    /* 오른쪽 입력 영역 */
+    div[class*="st-key-auth_login_card"] [data-testid="stColumn"]:last-child,
+    div[class*="st-key-auth_signup_card"] [data-testid="stColumn"]:last-child {
+        min-width: 0 !important;
+        padding: 30px 38px !important;
+        background: #ffffff !important;
+    }
+
+    /* 기존 폼의 중복 테두리 제거 */
+    div[class*="st-key-auth_login_card"] [data-testid="stForm"],
+    div[class*="st-key-auth_signup_card"] [data-testid="stForm"] {
+        padding: 0 !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        background: transparent !important;
+    }
+
+    /* 로그인·회원가입 탭 파란색 */
+    [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+        color: #155be7 !important;
+    }
+
+    [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        background-color: #155be7 !important;
+    }
+
+    /* 입력창 */
+    div[class*="st-key-auth_login_card"] input,
+    div[class*="st-key-auth_signup_card"] input {
+        min-height: 44px !important;
+        border-radius: 9px !important;
+    }
+
+    /* 로그인·회원가입 버튼 */
+    div[class*="st-key-auth_login_card"] [data-testid="stFormSubmitButton"] button,
+    div[class*="st-key-auth_signup_card"] [data-testid="stFormSubmitButton"] button {
+        width: 100% !important;
+        min-height: 48px !important;
+        background: #155be7 !important;
+        border: 1px solid #155be7 !important;
+        color: white !important;
+        border-radius: 9px !important;
+        font-size: 16px !important;
+        font-weight: 700 !important;
+    }
+    /* 로그인 버튼 기존 위치 유지 */
+    div[class*="st-key-auth_login_card"] [data-testid="stFormSubmitButton"] {
+        margin-top: 20px !important;
+    }
+
+    /* 회원가입 버튼의 레이아웃 여백 제거 */
+    div[class*="st-key-auth_signup_card"] [data-testid="stFormSubmitButton"] {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+    }
+
+    /* 회원가입 버튼만 아래로 12px 이동 */
+    div[class*="st-key-auth_signup_card"] [data-testid="stFormSubmitButton"] button {
+        transform: translateY(12px) !important;
+    }
+    /* 버튼 마우스 호버 */
+    div[class*="st-key-auth_login_card"] [data-testid="stFormSubmitButton"] button:hover,
+    div[class*="st-key-auth_signup_card"] [data-testid="stFormSubmitButton"] button:hover {
+        background: #0d47bd !important;
+        border-color: #0d47bd !important;
+    }
+
+    /* 작은 화면 여백 조절 */
+    @media (max-width: 820px) {
+        div[class*="st-key-auth_login_card"] [data-testid="stColumn"]:first-child,
+        div[class*="st-key-auth_signup_card"] [data-testid="stColumn"]:first-child {
+            padding: 16px 8px !important;
+        }
+
+        div[class*="st-key-auth_login_card"] [data-testid="stColumn"]:last-child,
+        div[class*="st-key-auth_signup_card"] [data-testid="stColumn"]:last-child {
+            padding: 22px 18px !important;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 로그인·회원가입 공통 상단 제목 및 대표 아이콘
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:14px;min-height:54px;">'
+
+        '<span style="width:44px;height:44px;flex:0 0 44px;'
+        'display:inline-flex;align-items:center;justify-content:center;'
+        'background:#2364f3;border-radius:9px;">'
+
+        '<svg width="36" height="36" viewBox="0 0 48 48" '
+        'xmlns="http://www.w3.org/2000/svg">'
+
+        '<rect x="6" y="10" width="36" height="33" rx="6" fill="#EAF2FF"/>'
+        '<path d="M6 16 Q6 10 12 10 H36 Q42 10 42 16 V19 H6 Z" fill="#93C5FD"/>'
+        '<path d="M15 6 V14 M33 6 V14" stroke="#FFFFFF" '
+        'stroke-width="3" stroke-linecap="round"/>'
+        '<path d="M10 27 L24 21 L38 27 L24 33 Z" fill="#1D4ED8"/>'
+        '<path d="M17 30 V35 Q24 39 31 35 V30" '
+        'fill="#60A5FA" stroke="#1D4ED8" stroke-width="1.5"/>'
+        '<path d="M38 27 V36" stroke="#1D4ED8" stroke-width="2"/>'
+
+        '</svg></span>'
+
+        '<h1 style="margin:0;font-size:2.75rem;font-weight:700;'
+        'line-height:1.2;color:#1e293b;letter-spacing:-0.02em;">'
+        '학업 일정 관리 시스템'
+        '</h1></div>',
+        unsafe_allow_html=True
+    )
+
+    st.caption("본인의 학업 일정을 조회하고 관리할 수 있습니다.")
+    # 로그인·회원가입 탭 이동 시 입력값 초기화
+    def reset_auth_inputs_on_tab_change():
+        for key in (
+            "signin_email",
+            "signin_password",
+            "signup_email",
+            "signup_password",
+            "signup_password_check",
+        ):
+            st.session_state[key] = ""
+
+    login_tab, signup_tab = st.tabs(
+        ["로그인", "회원가입"],
+        key="auth_view_tab",
+        on_change=reset_auth_inputs_on_tab_change
+    )
 
     with login_tab:
-        with st.form("signin_form"):
-            st.text_input("이메일", key="signin_email")
-            st.text_input(
-                "비밀번호", type="password", key="signin_password"
-            )
-            st.form_submit_button(
-                "로그인", type="primary", on_click=handle_signin
+        with st.container(key="auth_login_card", border=True):
+
+            login_image_col, login_form_col = st.columns(
+                [1, 1.65],
+                gap="small",
+                vertical_alignment="center"
             )
 
-        signin_feedback = st.session_state.pop("signin_feedback", None)
-        if signin_feedback:
-            feedback_type, feedback_message = signin_feedback
-            if feedback_type == "warning":
-                warning_notice(feedback_message)
-            else:
-                error_notice(feedback_message)
+            # 왼쪽 학사모·달력 이미지 영역
+            with login_image_col:
+                st.markdown("""
+                <div style="
+                    display:flex;
+                    flex-direction:column;
+                    align-items:center;
+                    justify-content:center;
+                    text-align:center;
+                    min-height:300px;
+                    padding:15px 8px;
+                ">
+                    <svg width="225" height="225"
+                         viewBox="0 0 240 240"
+                         xmlns="http://www.w3.org/2000/svg">
+
+                        <ellipse cx="120" cy="206"
+                                 rx="99" ry="17"
+                                 fill="#c5dcff"/>
+
+                        <rect x="59" y="147"
+                              width="122" height="27"
+                              rx="7" fill="#2563eb"/>
+                        <rect x="67" y="151"
+                              width="105" height="18"
+                              rx="4" fill="#ffffff"/>
+
+                        <rect x="49" y="174"
+                              width="142" height="25"
+                              rx="7" fill="#60a5fa"/>
+                        <rect x="58" y="178"
+                              width="125" height="16"
+                              rx="4" fill="#ffffff"/>
+
+                        <path d="M51 104 L120 76 L189 104
+                                 L120 130 Z"
+                              fill="#1d4ed8"/>
+
+                        <path d="M78 118 V143
+                                 Q120 165 162 143 V118
+                                 L120 135 Z"
+                              fill="#3b82f6"/>
+
+                        <path d="M189 104 V148"
+                              stroke="#1e40af"
+                              stroke-width="5"
+                              stroke-linecap="round"/>
+
+                        <path d="M189 144
+                                 Q183 158 189 171
+                                 Q195 158 189 144 Z"
+                              fill="#fbbf24"/>
+
+                        <path d="M203 74 L213 63
+                                 M210 93 L225 91
+                                 M185 63 L188 48"
+                              stroke="#60a5fa"
+                              stroke-width="5"
+                              stroke-linecap="round"/>
+
+                    </svg>
+
+                    <div style="
+                        font-size:17px;
+                        font-weight:700;
+                        color:#1e3a8a;
+                        margin-top:4px;
+                    ">
+                        학업 일정을 한눈에 관리
+                    </div>
+
+                    <div style="
+                        font-size:13px;
+                        color:#64748b;
+                        margin-top:7px;
+                        line-height:1.6;
+                    ">
+                        D-Day와 우선순위를 확인하고<br>
+                        중요한 일정을 놓치지 마세요.
+                    </div>
+                </div>
+                """.replace("\n", " ").strip(), unsafe_allow_html=True)
+
+            # 오른쪽 로그인 입력 영역
+            with login_form_col:
+                # 로그인 오류 메시지를 제목 오른쪽에 표시
+                signin_feedback = st.session_state.pop(
+                    "signin_feedback", None
+                )
+
+                login_notice_html = ""
+
+                if signin_feedback:
+                    feedback_type, feedback_message = signin_feedback
+
+                    notice_kind = (
+                        "warning"
+                        if feedback_type == "warning"
+                        else "error"
+                    )
+
+                    bg, color, border, icon_name, _ = NOTICE_THEMES[
+                        notice_kind
+                    ]
+
+                    login_notice_html = (
+                        '<div role="alert" style="'
+                        'position:absolute;left:155px;right:auto;top:2px;'
+                        'width:max-content;max-width:calc(100% - 155px);box-sizing:border-box;'
+                        'display:flex;align-items:center;'
+                        'gap:9px;min-height:44px;'
+                        'padding:8px 12px;border-radius:8px;'
+                        f'background:{bg};'
+                        f'color:{color};'
+                        f'border:1px solid {border};'
+                        'font-size:14px;font-weight:600;'
+                        'line-height:1.3;'
+                        'overflow-wrap:anywhere;">'
+                        '<span style="flex:0 0 20px;display:inline-flex;">'
+                        f'{svg_notice_icon(icon_name, color, size=20)}'
+                        '</span>'
+                        f'<span style="min-width:0;">'
+                        f'{escape(str(feedback_message))}'
+                        '</span>'
+                        '</div>'
+                    )
+
+                # 제목과 오류 메시지를 같은 영역에 배치
+                st.markdown(
+                    '<div style="'
+                    'position:relative;'
+                    'width:100%;height:65px;">'
+
+                    '<div style="'
+                    'position:absolute;left:0;top:0;'
+                    'display:flex;align-items:center;gap:13px;">'
+
+                    '<span style="'
+                    'width:48px;height:48px;flex-shrink:0;'
+                    'display:flex;align-items:center;'
+                    'justify-content:center;'
+                    'border-radius:12px;background:#e8f1ff;">'
+
+                    '<svg width="29" height="29" '
+                    'viewBox="0 0 24 24" '
+                    'fill="none" stroke="#2563eb" '
+                    'stroke-width="2" '
+                    'stroke-linecap="round" '
+                    'stroke-linejoin="round">'
+
+                    '<circle cx="12" cy="8" r="4"/>'
+                    '<path d="M4 21v-2 a8 8 0 0 1 16 0v2"/>'
+                    '</svg></span>'
+
+                    '<div>'
+                    '<div style="'
+                    'font-size:27px;font-weight:800;'
+                    'color:#1e293b;">'
+                    '로그인'
+                    '</div>'
+
+                    '</div></div>'
+
+                    f'{login_notice_html}'
+
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+                # 기존 로그인 기능 유지
+                with st.form("signin_form"):
+
+                    st.text_input(
+                        "이메일",
+                        key="signin_email",
+                        placeholder="이메일을 입력해주세요."
+                    )
+
+                    st.text_input(
+                        "비밀번호",
+                        type="password",
+                        key="signin_password",
+                        placeholder="비밀번호를 입력해주세요."
+                    )
+
+                    st.form_submit_button(
+                        "로그인",
+                        type="primary",
+                        on_click=handle_signin,
+                        width="stretch"
+                    )
 
     with signup_tab:
-        with st.form("signup_form"):
-            signup_email = st.text_input("이메일", key="signup_email").strip()
-            signup_password = st.text_input(
-                "비밀번호 (8자 이상)", type="password", key="signup_password"
+        with st.container(key="auth_signup_card", border=True):
+
+            signup_image_col, signup_form_col = st.columns(
+                [1, 1.65],
+                gap="small",
+                vertical_alignment="center"
             )
-            signup_password_check = st.text_input(
-                "비밀번호 확인", type="password", key="signup_password_check"
-            )
-            signup_clicked = st.form_submit_button("회원가입")
 
-        if signup_clicked:
-            if not signup_email or not signup_password:
-                warning_notice("이메일과 비밀번호를 입력해주세요.")
-            elif len(signup_password) < 8:
-                warning_notice("비밀번호는 최소 8자 이상 입력해주세요.")
-            elif signup_password != signup_password_check:
-                warning_notice("비밀번호 확인이 일치하지 않습니다.")
-            else:
-                try:
-                    response = new_supabase_client().auth.sign_up({
-                        "email": signup_email,
-                        "password": signup_password,
-                    })
+            # ==================================================
+            # 왼쪽 학사모·책 이미지 영역
+            # ==================================================
+            with signup_image_col:
+                st.markdown("""
+                <div style="
+                    display:flex;
+                    flex-direction:column;
+                    align-items:center;
+                    justify-content:center;
+                    text-align:center;
+                    min-height:365px;
+                    padding:15px 8px;
+                ">
+                    <svg width="225" height="225"
+                         viewBox="0 0 240 240"
+                         xmlns="http://www.w3.org/2000/svg">
 
-                    if response.session is not None:
-                        signup_session = response.session
+                        <ellipse cx="120" cy="206"
+                                 rx="99" ry="17"
+                                 fill="#c5dcff"/>
 
-                        if (
-                            not signup_session.access_token
-                            or not signup_session.refresh_token
-                        ):
-                            raise ValueError("회원가입 세션을 받지 못했습니다.")
+                        <rect x="59" y="147"
+                              width="122" height="27"
+                              rx="7" fill="#2563eb"/>
+                        <rect x="67" y="151"
+                              width="105" height="18"
+                              rx="4" fill="#ffffff"/>
 
-                        # 회원가입 직후에는 쿠키를 바로 저장하지 않음
-                        st.session_state["auth_access_token"] = (
-                            signup_session.access_token
+                        <rect x="49" y="174"
+                              width="142" height="25"
+                              rx="7" fill="#60a5fa"/>
+                        <rect x="58" y="178"
+                              width="125" height="16"
+                              rx="4" fill="#ffffff"/>
+
+                        <path d="M51 104 L120 76 L189 104
+                                 L120 130 Z"
+                              fill="#1d4ed8"/>
+
+                        <path d="M78 118 V143
+                                 Q120 165 162 143 V118
+                                 L120 135 Z"
+                              fill="#3b82f6"/>
+
+                        <path d="M189 104 V148"
+                              stroke="#1e40af"
+                              stroke-width="5"
+                              stroke-linecap="round"/>
+
+                        <path d="M189 144
+                                 Q183 158 189 171
+                                 Q195 158 189 144 Z"
+                              fill="#fbbf24"/>
+
+                        <path d="M203 74 L213 63
+                                 M210 93 L225 91
+                                 M185 63 L188 48"
+                              stroke="#60a5fa"
+                              stroke-width="5"
+                              stroke-linecap="round"/>
+
+                    </svg>
+
+                    <div style="
+                        font-size:17px;
+                        font-weight:700;
+                        color:#1e3a8a;
+                        margin-top:4px;
+                    ">
+                        나만의 학업 일정 관리
+                    </div>
+
+                    <div style="
+                        font-size:13px;
+                        color:#64748b;
+                        margin-top:7px;
+                        line-height:1.6;
+                    ">
+                        새로운 계정을 만들고<br>
+                        학업 일정을 체계적으로 관리하세요.
+                    </div>
+                </div>
+                """.replace("\n", " ").strip(), unsafe_allow_html=True)
+
+            # ==================================================
+            # 오른쪽 회원가입 입력 영역
+            # ==================================================
+            with signup_form_col:
+                # 회원가입 제목 및 알림 표시 영역
+                signup_header_slot = st.empty()
+
+                # ==============================================
+                # 기존 회원가입 입력 기능 유지
+                # ==============================================
+                with st.form("signup_form"):
+
+                    signup_email = st.text_input(
+                        "이메일",
+                        key="signup_email",
+                        placeholder="이메일을 입력해주세요."
+                    ).strip()
+
+                    signup_password = st.text_input(
+                        "비밀번호 (8자 이상)",
+                        type="password",
+                        key="signup_password",
+                        placeholder="8자 이상 입력해주세요."
+                    )
+
+                    signup_password_check = st.text_input(
+                        "비밀번호 확인",
+                        type="password",
+                        key="signup_password_check",
+                        placeholder="비밀번호를 다시 입력해주세요."
+                    )
+
+                    signup_clicked = st.form_submit_button(
+                        "회원가입",
+                        width=180
+                    )
+
+                # ==============================================
+                # 회원가입 검증 및 Supabase 처리
+                # 기존 기능 유지, 오류 표시 위치만 변경
+                # ==============================================
+                signup_feedback = None
+
+                if signup_clicked:
+
+                    if not signup_email or not signup_password:
+                        signup_feedback = (
+                            "warning",
+                            "이메일과 비밀번호를 입력해주세요."
                         )
-                        st.session_state["auth_refresh_token"] = (
-                            signup_session.refresh_token
-                        )
-                        st.session_state["browser_session_clear_requested"] = False
-                        st.session_state["_pending_new_login"] = True
 
-                        st.success(
-                            "회원가입이 완료됐습니다. 로그인 상태로 전환합니다.",
-                            icon=":material/check_circle:"
+                    elif not is_valid_auth_email(signup_email):
+                        signup_feedback = (
+                            "warning",
+                            "올바른 이메일 형식으로 입력해주세요. "
+                            "(예: name@example.com)"
                         )
-                        st.rerun()
+
+                    elif len(signup_password) < 8:
+                        signup_feedback = (
+                            "warning",
+                            "비밀번호는 최소 8자 이상 입력해주세요."
+                        )
+
+                    elif signup_password != signup_password_check:
+                        signup_feedback = (
+                            "warning",
+                            "비밀번호 확인이 일치하지 않습니다."
+                        )
+
                     else:
-                        info_notice(
-                            "가입 요청이 처리됐습니다. 이메일 인증 후 로그인해주세요."
-                        )
+                        try:
+                            response = new_supabase_client().auth.sign_up({
+                                "email": signup_email,
+                                "password": signup_password,
+                            })
 
-                except Exception:
-                    error_notice("회원가입에 실패했습니다. 입력 정보와 인증 설정을 확인해주세요.")
+                            if response.session is not None:
+                                signup_session = response.session
+
+                                if (
+                                    not signup_session.access_token
+                                    or not signup_session.refresh_token
+                                ):
+                                    raise ValueError(
+                                        "회원가입 세션을 받지 못했습니다."
+                                    )
+
+                                # 기존 인증 토큰 저장 방식 유지
+                                st.session_state["auth_access_token"] = (
+                                    signup_session.access_token
+                                )
+                                st.session_state["auth_refresh_token"] = (
+                                    signup_session.refresh_token
+                                )
+
+                                st.session_state[
+                                    "browser_session_clear_requested"
+                                ] = False
+
+                                st.session_state["_pending_new_login"] = True
+
+                                st.success(
+                                    "회원가입이 완료됐습니다. 로그인 상태로 전환합니다.",
+                                    icon=":material/check_circle:"
+                                )
+                                st.rerun()
+
+                            else:
+                                signup_feedback = (
+                                    "info",
+                                    "가입 요청이 처리됐습니다. "
+                                    "이메일 인증 후 로그인해주세요."
+                                )
+
+                        except Exception as error:
+                            signup_feedback = (
+                                "error",
+                                signup_error_message(error)
+                            )
+
+                # ==============================================
+                # 회원가입 제목 오른쪽 알림
+                # ==============================================
+                signup_notice_html = ""
+
+                if signup_feedback:
+                    notice_kind, notice_message = signup_feedback
+
+                    bg, color, border, icon_name, _ = NOTICE_THEMES[
+                        notice_kind
+                    ]
+
+                    signup_notice_html = (
+                        '<div role="alert" style="'
+                        'position:absolute;left:185px;right:auto;top:2px;'
+                        'width:max-content;max-width:calc(100% - 185px);box-sizing:border-box;'
+                        'display:flex;align-items:center;'
+                        'gap:9px;min-height:44px;max-height:62px;'
+                        'overflow-y:auto;padding:8px 12px;border-radius:8px;'
+                        f'background:{bg};color:{color};'
+                        f'border:1px solid {border};'
+                        'font-size:14px;font-weight:600;'
+                        'line-height:1.3;overflow-wrap:anywhere;">'
+                        '<span style="flex:0 0 20px;display:inline-flex;">'
+                        f'{svg_notice_icon(icon_name, color, size=20)}'
+                        '</span>'
+                        f'<span style="min-width:0;">'
+                        f'{escape(str(notice_message))}'
+                        '</span>'
+                        '</div>'
+                    )
+
+                # ==============================================
+                # 회원가입 제목 및 알림 표시
+                # ==============================================
+                signup_header_slot.markdown(
+                    '<div style="'
+                    'position:relative;width:100%;height:65px;">'
+
+                    '<div style="'
+                    'position:absolute;left:0;top:0;'
+                    'display:flex;align-items:center;gap:13px;">'
+
+                    '<span style="'
+                    'width:48px;height:48px;flex-shrink:0;'
+                    'display:flex;align-items:center;'
+                    'justify-content:center;'
+                    'border-radius:12px;background:#e8f1ff;">'
+
+                    '<svg width="29" height="29" '
+                    'viewBox="0 0 24 24" '
+                    'fill="none" stroke="#2563eb" '
+                    'stroke-width="2" '
+                    'stroke-linecap="round" '
+                    'stroke-linejoin="round">'
+
+                    '<circle cx="9" cy="8" r="4"/>'
+                    '<path d="M2 21v-2 a7 7 0 0 1 14 0"/>'
+                    '<path d="M19 8v8M15 12h8"/>'
+                    '</svg></span>'
+
+                    '<div>'
+                    '<div style="'
+                    'font-size:27px;font-weight:800;'
+                    'color:#1e293b;">'
+                    '회원가입'
+                    '</div>'
+
+                    '</div></div>'
+
+                    f'{signup_notice_html}'
+
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+
 # 연결 값이 누락되면 안전하게 중단한다.
 try:
     _config_url = st.secrets["SUPABASE_URL"]
@@ -1820,65 +2488,119 @@ elif st.session_state.previous_menu != menu:
 
     # 현재 메뉴 기록
     st.session_state.previous_menu = menu
-
-
 # ==================================================
 # 공통 제목
+# 일정 등록 화면에만 기존 제목 표시
 # ==================================================
-if menu != "일정 목록 (완료·수정·삭제)":
-    if menu == "일정 등록":
-        st.markdown(
-            '<div style="display:flex;align-items:center;gap:16px;'
-            'margin-bottom:6px;">'
-            '<span style="display:inline-flex;align-items:center;'
-            'justify-content:center;width:58px;height:58px;'
-            'background:#e8f0ff;border-radius:14px;flex-shrink:0;">'
-            '<svg width="44" height="44" viewBox="0 0 64 64" '
-            'xmlns="http://www.w3.org/2000/svg">'
-            '<path d="M5 23 30 12 55 23 30 35Z" fill="#1e40af"/>'
-            '<path d="M17 30v9c0 6 6 10 13 10s13-4 13-10v-9" '
-            'fill="#3b82f6" stroke="#1e40af" stroke-width="2"/>'
-            '<path d="M55 23v12" stroke="#1e40af" '
-            'stroke-width="2.5" stroke-linecap="round"/>'
-            '<circle cx="49" cy="46" r="12" fill="#2563eb" '
-            'stroke="#e8f0ff" stroke-width="3"/>'
-            '<path d="M49 40v12M43 46h12" fill="none" '
-            'stroke="#ffffff" stroke-width="3" '
-            'stroke-linecap="round"/>'
-            '</svg></span>'
-            '<span style="font-size:clamp(26px,3vw,42px);'
-            'font-weight:800;color:#2c3040;'
-            'letter-spacing:-1px;line-height:1.2;">'
-            '대학생 학업 일정 및 우선순위 관리 시스템'
-            '</span></div>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.title(
-            "📅 대학생 학업 일정 및 우선순위 관리 시스템"
-        )
+if menu == "일정 등록":
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:16px;'
+        'margin-bottom:6px;">'
+        '<span style="display:inline-flex;align-items:center;'
+        'justify-content:center;width:58px;height:58px;'
+        'background:#e8f0ff;border-radius:14px;flex-shrink:0;">'
+        '<svg width="44" height="44" viewBox="0 0 64 64" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<path d="M5 23 30 12 55 23 30 35Z" fill="#1e40af"/>'
+        '<path d="M17 30v9c0 6 6 10 13 10s13-4 13-10v-9" '
+        'fill="#3b82f6" stroke="#1e40af" stroke-width="2"/>'
+        '<path d="M55 23v12" stroke="#1e40af" '
+        'stroke-width="2.5" stroke-linecap="round"/>'
+        '<circle cx="49" cy="46" r="12" fill="#2563eb" '
+        'stroke="#e8f0ff" stroke-width="3"/>'
+        '<path d="M49 40v12M43 46h12" fill="none" '
+        'stroke="#ffffff" stroke-width="3" '
+        'stroke-linecap="round"/>'
+        '</svg></span>'
+        '<span style="font-size:clamp(26px,3vw,42px);'
+        'font-weight:800;color:#2c3040;'
+        'letter-spacing:-1px;line-height:1.2;">'
+        '대학생 학업 일정 및 우선순위 관리 시스템'
+        '</span></div>',
+        unsafe_allow_html=True
+    )
 
     st.caption(
         "학업 일정을 관리하고 D-Day와 중요도, 예상 소요시간을 기반으로 "
         "우선순위를 자동 계산하는 프로그램입니다."
     )
 
-    if menu == "일정 등록":
-        st.markdown(
-            '<div style="width:100%;height:1px;'
-            'background:#d1d5db;margin:0;"></div>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.divider()
-
+    st.markdown(
+        '<div style="width:100%;height:1px;'
+        'background:#d1d5db;margin:0;"></div>',
+        unsafe_allow_html=True
+    )
 # ==================================================
 # 대시보드
 # ==================================================
 if menu == "대시보드":
 
-    st.header(
-        "대시보드"
+    # ==================================================
+    # 대시보드 전체 너비 및 여백 조정
+    # ==================================================
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stMainBlockContainer"] {
+            max-width: 1450px !important;
+            padding: 18px 20px 28px !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    # ==================================================
+    # 대시보드 전용 상단 제목 - 크기 및 여백 축소
+    # ==================================================
+    st.markdown(
+        """
+        <div style="
+            background:linear-gradient(110deg,#123d9b,#2563eb,#60a5fa);
+            border-radius:12px;
+            padding:12px 20px;
+            margin-top:-30px;
+            margin-bottom:12px;
+            display:flex;
+            align-items:center;
+            gap:13px;
+            box-shadow:0 4px 12px rgba(37,99,235,0.12);
+        ">
+            <div style="
+                width:44px;
+                height:44px;
+                flex-shrink:0;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background:rgba(255,255,255,0.15);
+                border-radius:10px;
+                font-size:28px;
+            ">🎓</div>
+
+            <div style="min-width:0;">
+                <div style="
+                    font-size:clamp(21px,2vw,29px);
+                    font-weight:800;
+                    color:#ffffff;
+                    line-height:1.25;
+                ">
+                    대학생 학업 일정 및 우선순위 관리 시스템
+                </div>
+
+                <div style="
+                    font-size:13px;
+                    color:#eaf2ff;
+                    margin-top:4px;
+                    line-height:1.4;
+                ">
+                    학업 일정을 관리하고 D-Day와 중요도,
+                    예상 소요시간을 기반으로 우선순위를
+                    자동 계산하는 프로그램입니다.
+                </div>
+            </div>
+        </div>
+        """.replace("\n", " ").strip(),
+        unsafe_allow_html=True
     )
 
     # 완료한 일정은 추천 및 마감 알림 계산에서 제외
@@ -1902,62 +2624,1073 @@ if menu == "대시보드":
     # 기존 우선순위 정렬 결과 중 상위 3개 추천
     recommended_tasks = pending_schedules[:3]
 
-    col1, col2, col3 = st.columns(3)
+    # ==================================================
+    # 대시보드 상단 통계 카드 4개
+    # ==================================================
 
-    with col1:
-
-        st.metric(
-            "오늘 마감 일정",
-            f"{len(today_tasks)}개"
-        )
-
-    with col2:
-
-        st.metric(
-            "임박 일정",
-            f"{len(urgent_tasks)}개"
-        )
-
-    with col3:
-
-        st.metric(
-            "전체 일정",
-            f"{len(schedules)}개"
-        )
-
-    st.subheader("📌 오늘 할 일 추천")
-
-    if recommended_tasks:
-        for rank, schedule in enumerate(recommended_tasks, start=1):
-            st.write(
-                f"**{rank}순위 | "
-                f"{schedule['과목명']} - {schedule['일정명']}** "
-                f"| {format_dday(schedule['D-Day'])} "
-                f"| 중요도: {schedule['중요도']} "
-                f"| 우선순위: {schedule['우선순위 점수']}점"
-            )
-    else:
-        info_notice("추천할 미완료 일정이 없습니다.")
-
-    st.subheader(
-        "⏰ 임박 일정"
+    # 완료 일정 수 및 전체 완료율 계산
+    completed_count = sum(
+        1 for schedule in schedules
+        if schedule["완료 여부"]
     )
 
-    if urgent_tasks:
+    total_count = len(schedules)
 
-        for schedule in urgent_tasks:
+    completion_rate = (
+        round(completed_count / total_count * 100)
+        if total_count > 0 else 0
+    )
 
-            st.write(
-                f"{schedule['과목명']} - "
-                f"{schedule['일정명']} "
-                f"({format_dday(schedule['D-Day'])})"
+    # 공통 통계 카드 디자인
+    def dashboard_stat_card(icon, title, value, description):
+        return (
+            '<div style="'
+            'height:145px;box-sizing:border-box;'
+            'background:linear-gradient(135deg,#f3f8ff,#dbeafe);'
+            'border:1px solid #bfdbfe;'
+            'border-radius:13px;'
+            'padding:20px 15px;'
+            'box-shadow:0 3px 9px rgba(37,99,235,0.07);'
+            'display:flex;align-items:center;gap:13px;">'
+
+            '<span style="'
+            'font-size:36px;flex-shrink:0;'
+            'line-height:1;">'
+            f'{icon}</span>'
+
+            '<div style="min-width:0;">'
+
+            '<div style="'
+            'font-size:17px;font-weight:800;'
+            'color:#142c58;white-space:nowrap;">'
+            f'{title}</div>'
+
+            '<div style="'
+            'font-size:32px;font-weight:800;'
+            'color:#1d4ed8;margin:5px 0;">'
+            f'{value}</div>'
+
+            '<div style="'
+            'font-size:12px;color:#536b91;'
+            'line-height:1.4;">'
+            f'{description}</div>'
+
+            '</div></div>'
+        )
+
+    # 전체 완료율 원형 그래프 카드
+    def dashboard_completion_card():
+        return (
+            '<div style="'
+            'height:145px;box-sizing:border-box;'
+            'background:linear-gradient(135deg,#f3f8ff,#dbeafe);'
+            'border:1px solid #bfdbfe;'
+            'border-radius:13px;'
+            'padding:16px 13px;'
+            'box-shadow:0 3px 9px rgba(37,99,235,0.07);'
+            'display:flex;align-items:center;gap:12px;">'
+
+            '<div style="'
+            'width:80px;height:80px;flex-shrink:0;'
+            'border-radius:50%;'
+            f'background:conic-gradient(#2563eb 0% {completion_rate}%,'
+            f'#c7dafe {completion_rate}% 100%);'
+            'display:flex;align-items:center;'
+            'justify-content:center;">'
+
+            '<div style="'
+            'width:59px;height:59px;'
+            'background:#ffffff;border-radius:50%;'
+            'display:flex;align-items:center;'
+            'justify-content:center;'
+            'font-size:20px;font-weight:800;'
+            'color:#1e40af;">'
+            f'{completion_rate}%'
+            '</div></div>'
+
+            '<div style="min-width:0;">'
+
+            '<div style="'
+            'font-size:17px;font-weight:800;'
+            'color:#142c58;white-space:nowrap;">'
+            '전체 완료율</div>'
+
+            '<div style="'
+            'font-size:14px;font-weight:700;'
+            'color:#1e40af;margin-top:8px;">'
+            f'완료 {completed_count}개 / 전체 {total_count}개'
+            '</div>'
+
+            '<div style="'
+            'font-size:12px;color:#536b91;'
+            'margin-top:7px;">'
+            '전체 일정의 완료율입니다.'
+            '</div>'
+
+            '</div></div>'
+        )
+
+    # 통계 카드 4개 가로 배치
+    stat1, stat2, stat3, stat4 = st.columns(
+        4, gap="small"
+    )
+
+    with stat1:
+        st.markdown(
+            dashboard_stat_card(
+                "📅",
+                "오늘 할 일",
+                f"{len(recommended_tasks)}개",
+                "우선순위 기준 추천 일정입니다."
+            ),
+            unsafe_allow_html=True
+        )
+
+    with stat2:
+        st.markdown(
+            dashboard_stat_card(
+                "⏰",
+                "임박 일정",
+                f"{len(urgent_tasks)}개",
+                "D-Day 3일 이내 일정입니다."
+            ),
+            unsafe_allow_html=True
+        )
+
+    with stat3:
+        st.markdown(
+            dashboard_stat_card(
+                "📋",
+                "전체 일정",
+                f"{total_count}개",
+                "등록된 전체 일정 수입니다."
+            ),
+            unsafe_allow_html=True
+        )
+
+    with stat4:
+        st.markdown(
+            dashboard_completion_card(),
+            unsafe_allow_html=True
+        )
+
+    # ==================================================
+    # 오늘 할 일 추천 TOP 3 카드 및 스크롤
+    # ==================================================
+    recommendation_rows = []
+
+    for rank, schedule in enumerate(pending_schedules, start=1):
+        dday = schedule["D-Day"]
+
+        # D-Day 표시 색상
+        if dday < 0:
+            dday_bg = "#fee2e2"
+            dday_color = "#dc2626"
+        elif dday <= 3:
+            dday_bg = "#fee2e2"
+            dday_color = "#dc2626"
+        else:
+            dday_bg = "#dbeafe"
+            dday_color = "#1d4ed8"
+
+        # 상위 3개 순위 강조
+        rank_bg = "#bfdbfe" if rank <= 3 else "#e2e8f0"
+        rank_color = "#1e40af" if rank <= 3 else "#475569"
+
+        subject = escape(str(schedule["과목명"]))
+        name = escape(str(schedule["일정명"]))
+        importance = escape(str(schedule["중요도"]))
+        hours = format_expected_time(schedule["예상 소요시간"])
+        priority = schedule["우선순위 점수"]
+        dday_text = escape(format_dday(dday))
+
+        recommendation_rows.append(
+            '<div style="'
+            'display:flex;align-items:center;gap:14px;'
+            'height:88px;min-height:88px;'
+            'box-sizing:border-box;'
+            'padding:7px 12px;'
+            'border-bottom:1px solid #dbe5f3;'
+            'background:#ffffff;">'
+
+            # 왼쪽 순위 배지
+            f'<div style="'
+            f'background:{rank_bg};color:{rank_color};'
+            'border-radius:8px;padding:8px 12px;'
+            'font-size:16px;font-weight:800;'
+            'white-space:nowrap;">'
+            f'{rank}위</div>'
+
+            # 일정명과 상세 정보 세로 중앙 정렬
+            '<div style="'
+            'flex:1;min-width:0;'
+            'display:flex;flex-direction:column;'
+            'justify-content:center;'
+            'gap:8px;">'
+
+            # 일정명
+            '<div style="'
+            'font-size:16px;font-weight:800;'
+            'color:#172b50;'
+            'line-height:1.3;'
+            'overflow-wrap:anywhere;">'
+            f'{subject} - {name}</div>'
+
+            # D-Day, 중요도, 예상 소요시간
+            '<div style="'
+            'display:flex;align-items:center;'
+            'gap:6px;flex-wrap:wrap;">'
+
+            f'<span style="background:{dday_bg};'
+            f'color:{dday_color};'
+            'padding:4px 9px;border-radius:6px;'
+            'font-size:13px;font-weight:700;">'
+            f'{dday_text}</span>'
+
+            '<span style="'
+            'background:#e8f1ff;color:#1e40af;'
+            'padding:4px 9px;border-radius:6px;'
+            'font-size:13px;font-weight:600;">'
+            f'중요도: {importance}</span>'
+
+            '<span style="'
+            'background:#ede9fe;color:#4338ca;'
+            'padding:4px 9px;border-radius:6px;'
+            'font-size:13px;font-weight:600;">'
+            f'예상 {hours}</span>'
+
+            '</div></div></div>'
+        )
+
+    if recommendation_rows:
+        recommendation_content = "".join(recommendation_rows)
+    else:
+        recommendation_content = (
+            '<div style="padding:35px 15px;text-align:center;'
+            'color:#64748b;font-size:14px;">'
+            '추천할 미완료 일정이 없습니다.'
+            '</div>'
+        )
+
+    # 추천 일정 수에 맞춰 내부 목록 높이 조절
+    recommendation_visible_rows = min(len(recommendation_rows), 3)
+
+    recommendation_list_height = (
+        88 * recommendation_visible_rows + 2
+        if recommendation_visible_rows > 0 else 96
+    )
+
+    # 추천 일정이 4개 이상일 때만 스크롤
+    recommendation_scroll = (
+        "auto"
+        if len(recommendation_rows) > 3
+        else "hidden"
+    )
+
+    # ==================================================
+    # 추천 목록과 과목별 진행률 좌우 배치
+    # ==================================================
+    recommendation_col, progress_col = st.columns(
+        [1, 1],
+        gap="small"
+    )
+
+    # 추천 목록 전체에만 스크롤 적용
+    recommendation_col.markdown(
+        (
+            '<style>'
+            '.dashboard-recommend-scroll {'
+            'scrollbar-width:auto;'
+            'scrollbar-color:#60a5fa #eff6ff;'
+            '}'
+            '.dashboard-recommend-scroll::-webkit-scrollbar {'
+            'width:12px;'
+            '}'
+            '.dashboard-recommend-scroll::-webkit-scrollbar-track {'
+            'background:#eff6ff;border-radius:10px;'
+            '}'
+            '.dashboard-recommend-scroll::-webkit-scrollbar-thumb {'
+            'background:#60a5fa;border-radius:10px;'
+            'border:2px solid #eff6ff;'
+            '}'
+            '</style>'
+
+            '<div style="'
+            'background:linear-gradient(135deg,#ffffff,#f5f9ff);'
+            'border:1px solid #bfdbfe;'
+            'border-radius:14px;'
+            'margin-top:16px;'
+            'padding:15px;'
+            'height:340px;'
+            'box-sizing:border-box;'
+            'box-shadow:0 3px 10px rgba(37,99,235,0.06);">'
+
+            '<div style="display:flex;'
+            'justify-content:space-between;'
+            'align-items:center;flex-wrap:wrap;'
+            'gap:8px;margin-bottom:14px;">'
+
+            '<div style="font-size:23px;font-weight:800;'
+            'color:#142c58;">'
+            '🔥 오늘 할 일 추천 TOP 3'
+            '</div>'
+
+            '<div style="font-size:13px;color:#64748b;">'
+            '미완료 일정 중 우선순위가 높은 3개를 추천합니다.'
+            '</div>'
+
+            '</div>'
+
+            '<div class="dashboard-recommend-scroll" style="'
+            f'height:{recommendation_list_height}px;'
+            f'overflow-y:{recommendation_scroll};'
+            'overflow-x:hidden;'
+            'overscroll-behavior:contain;'
+            'box-sizing:border-box;'
+            'border:1px solid #dbe5f3;'
+            'border-radius:10px;'
+            'background:#ffffff;">'
+
+            f'{recommendation_content}'
+
+            '</div></div>'
+        ),
+        unsafe_allow_html=True
+    )
+
+    # ==================================================
+    # 과목별 진행률 계산
+    # ==================================================
+    subject_progress = {}
+
+    for schedule in schedules:
+        subject_name = schedule["과목명"]
+
+        if subject_name not in subject_progress:
+            subject_progress[subject_name] = {
+                "total": 0,
+                "completed": 0
+            }
+
+        subject_progress[subject_name]["total"] += 1
+
+        if schedule["완료 여부"]:
+            subject_progress[subject_name]["completed"] += 1
+
+    # ==================================================
+    # 과목별 진행률 데이터 행 생성
+    # ==================================================
+    progress_rows = []
+
+    for subject_name in sorted(subject_progress):
+        counts = subject_progress[subject_name]
+
+        subject_total = counts["total"]
+        subject_completed = counts["completed"]
+
+        subject_rate = (
+            round(subject_completed / subject_total * 100)
+            if subject_total > 0 else 0
+        )
+
+        safe_subject = escape(str(subject_name))
+
+        # 완료율에 따른 막대 색상
+        if subject_rate >= 75:
+            bar_color = "#2563eb"
+            rate_color = "#1d4ed8"
+        elif subject_rate >= 50:
+            bar_color = "#16a34a"
+            rate_color = "#15803d"
+        elif subject_rate >= 25:
+            bar_color = "#f97316"
+            rate_color = "#ea580c"
+        else:
+            bar_color = "#ef4444"
+            rate_color = "#dc2626"
+
+        progress_rows.append(
+            '<div style="'
+            'display:grid;'
+            'grid-template-columns:minmax(0,1.1fr) minmax(0,1.5fr) 65px 48px;'
+            'gap:9px;align-items:center;'
+            'height:88px;min-height:88px;'
+            'box-sizing:border-box;'
+            'padding:8px 11px;'
+            'border-bottom:1px solid #e2e8f1;'
+            'background:#ffffff;">'
+
+            '<div style="'
+            'font-size:16px;font-weight:800;'
+            'color:#172b50;overflow-wrap:anywhere;">'
+            f'{safe_subject}</div>'
+
+            '<div style="'
+            'width:100%;height:20px;'
+            'background:#e2e8f0;'
+            'border-radius:7px;overflow:hidden;">'
+
+            '<div style="'
+            f'width:{subject_rate}%;'
+            'height:100%;'
+            f'background:{bar_color};'
+            'border-radius:7px;">'
+            '</div></div>'
+
+            '<div style="'
+            'font-size:14px;color:#405577;'
+            'text-align:center;white-space:nowrap;">'
+            f'{subject_completed} / {subject_total}개'
+            '</div>'
+
+            '<div style="'
+            'font-size:16px;font-weight:800;'
+            f'color:{rate_color};'
+            'text-align:right;white-space:nowrap;">'
+            f'{subject_rate}%</div>'
+
+            '</div>'
+        )
+
+    if progress_rows:
+        progress_content = "".join(progress_rows)
+    else:
+        progress_content = (
+            '<div style="padding:35px 15px;'
+            'text-align:center;color:#64748b;'
+            'font-size:14px;">'
+            '등록된 과목이 없습니다.'
+            '</div>'
+        )
+
+    # ==================================================
+    # 과목별 진행률 높이 및 스크롤 설정
+    # ==================================================
+    progress_visible_rows = min(len(progress_rows), 3)
+
+    progress_list_height = (
+        88 * progress_visible_rows + 2
+        if progress_visible_rows > 0 else 96
+    )
+
+    # 과목이 4개 이상일 때만 스크롤
+    progress_scroll = (
+        "auto"
+        if len(subject_progress) > 3
+        else "hidden"
+    )
+
+    # ==================================================
+    # 과목별 진행률 카드 디자인
+    # ==================================================
+    progress_html = (
+        '<style>'
+        '.dashboard-progress-scroll {'
+        'scrollbar-width:auto;'
+        'scrollbar-color:#60a5fa #eff6ff;'
+        '}'
+        '.dashboard-progress-scroll::-webkit-scrollbar {'
+        'width:12px;'
+        '}'
+        '.dashboard-progress-scroll::-webkit-scrollbar-track {'
+        'background:#eff6ff;'
+        'border-radius:10px;'
+        '}'
+        '.dashboard-progress-scroll::-webkit-scrollbar-thumb {'
+        'background:#60a5fa;'
+        'border-radius:10px;'
+        'border:2px solid #eff6ff;'
+        '}'
+        '</style>'
+
+        '<div style="'
+        'background:linear-gradient(135deg,#ffffff,#f5f9ff);'
+        'border:1px solid #bfdbfe;'
+        'border-radius:14px;'
+        'padding:15px;'
+        'margin-top:16px;'
+        'height:340px;'
+        'box-sizing:border-box;'
+        'box-shadow:0 3px 10px rgba(37,99,235,0.06);">'
+
+        '<div style="'
+        'display:flex;justify-content:space-between;'
+        'align-items:center;flex-wrap:wrap;'
+        'gap:8px;margin-bottom:14px;">'
+
+        '<div style="'
+        'font-size:23px;font-weight:800;'
+        'color:#142c58;">'
+        '📊 과목별 진행률'
+        '</div>'
+
+        '<div style="'
+        'font-size:12px;color:#64748b;">'
+        '과목별 완료 일정의 비율입니다.'
+        '</div>'
+
+        '</div>'
+
+        '<div class="dashboard-progress-scroll" style="'
+        f'height:{progress_list_height}px;'
+        f'overflow-y:{progress_scroll};'
+        'overflow-x:hidden;'
+        'overscroll-behavior:contain;'
+        'box-sizing:border-box;'
+        'border:1px solid #dbe5f3;'
+        'border-radius:10px;'
+        'background:#ffffff;">'
+
+        f'{progress_content}'
+
+        '</div></div>'
+    )
+
+    # ==================================================
+    # 오른쪽 과목별 진행률 표시
+    # ==================================================
+    progress_col.markdown(
+        progress_html,
+        unsafe_allow_html=True
+    )
+
+    # ==================================================
+    # 기존 임박 일정 영역 유지
+    # ==================================================
+    # ==================================================
+    # 임박 일정 및 완료 현황 좌우 배치
+    # ==================================================
+    urgent_col, status_col = st.columns(
+        [1.6, 1],
+        gap="small"
+    )
+
+    # ==================================================
+    # 임박 일정 표 디자인 및 스크롤
+    # ==================================================
+    st.markdown(
+        """
+        <style>
+        /* 임박 일정 표 가로 8열 배치 */
+        .dashboard-urgent-grid {
+            display:grid;
+            grid-template-columns:
+                7% 13% 19% 18% 9% 10% 15% 9%;
+            align-items:center;
+            width:100%;
+            min-width:0;
+            gap:0;
+        }
+
+        /* 헤더와 데이터 셀 정렬 및 세로 구분선 */
+        .dashboard-urgent-grid > div {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            min-width:0;
+            height:100%;
+            text-align:center;
+            overflow-wrap:anywhere;
+            padding:5px 3px;
+            box-sizing:border-box;
+            border-right:1px solid #dbe5f3;
+        }
+
+        /* 마지막 열은 오른쪽 구분선 제거 */
+        .dashboard-urgent-grid > div:last-child {
+            border-right:none;
+        }
+
+        /* 임박 일정 표 헤더 */
+        .dashboard-urgent-header {
+            min-height:36px;
+            padding-right:12px;
+            box-sizing:border-box;
+            background:#eaf2ff;
+            border-bottom:1px solid #dbe5f3;
+            font-size:13px;
+            font-weight:700;
+            color:#203253;
+        }
+
+        /* 임박 일정 데이터 행 */
+        .dashboard-urgent-row {
+            height:50px;
+            border-bottom:1px solid #e2e8f1;
+            font-size:13px;
+            color:#263650;
+            background:#ffffff;
+        }
+
+        .dashboard-urgent-scroll {
+            max-height:150px;
+            overflow-y:auto;
+            overflow-x:hidden;
+            overscroll-behavior:contain;
+            scrollbar-gutter:stable;
+            scrollbar-width:auto;
+            scrollbar-color:#60a5fa #eff6ff;
+        }
+
+        .dashboard-urgent-scroll::-webkit-scrollbar {
+            width:12px;
+        }
+
+        .dashboard-urgent-scroll::-webkit-scrollbar-track {
+            background:#eff6ff;
+            border-radius:10px;
+        }
+
+        .dashboard-urgent-scroll::-webkit-scrollbar-thumb {
+            background:#60a5fa;
+            border:2px solid #eff6ff;
+            border-radius:10px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # 표 헤더
+    urgent_headers = [
+        "순위", "과목명", "일정명", "마감일",
+        "D-Day", "중요도", "예상 시간", "점수"
+    ]
+
+    urgent_header_html = "".join(
+        f"<div>{escape(header)}</div>"
+        for header in urgent_headers
+    )
+
+    # 임박 일정 데이터 행
+    urgent_rows = []
+
+    for rank, schedule in enumerate(urgent_tasks, start=1):
+
+        remaining = schedule["D-Day"]
+
+        dday_color = (
+            "#ea580c" if remaining == 0 else "#dc2626"
+        )
+
+        row_values = [
+            f"{rank}위",
+            schedule["과목명"],
+            schedule["일정명"],
+            schedule["마감일"],
+            format_dday(remaining),
+            schedule["중요도"],
+            format_expected_time(schedule["예상 소요시간"]),
+            str(schedule["우선순위 점수"])
+        ]
+
+        row_cells = []
+
+        for index, value in enumerate(row_values):
+            color = (
+                dday_color if index == 4
+                else "#1d4ed8" if index == 7
+                else "#263650"
             )
 
-    else:
+            weight = 700 if index in (0, 4, 7) else 500
 
-        info_notice(
-            "3일 이내에 마감되는 일정이 없습니다."
+            row_cells.append(
+                '<div style="'
+                f'color:{color};font-weight:{weight};'
+                'max-height:50px;overflow:hidden;'
+                'line-height:1.35;">'
+                f'{escape(str(value))}'
+                '</div>'
+            )
+
+        urgent_rows.append(
+            '<div class="dashboard-urgent-grid dashboard-urgent-row">'
+            + "".join(row_cells)
+            + '</div>'
         )
+
+    if urgent_rows:
+        urgent_content = "".join(urgent_rows)
+    else:
+        urgent_content = (
+            '<div style="'
+            'min-height:120px;'
+            'display:flex;align-items:center;'
+            'justify-content:center;'
+            'padding:12px;text-align:center;'
+            'color:#64748b;font-size:14px;">'
+            '3일 이내에 마감되는 일정이 없습니다.'
+            '</div>'
+        )
+
+    # ==================================================
+    # 왼쪽 임박 일정 카드
+    # ==================================================
+    urgent_html = (
+        '<div style="'
+        'height:256px;box-sizing:border-box;'
+        'margin-top:16px;'
+        'background:linear-gradient(135deg,#ffffff,#f5f9ff);'
+        'border:1px solid #bfdbfe;'
+        'border-radius:14px;padding:14px;'
+        'box-shadow:0 3px 10px rgba(37,99,235,0.06);">'
+
+        '<div style="'
+        'display:flex;justify-content:space-between;'
+        'align-items:center;gap:8px;'
+        'margin-bottom:7px;">'
+
+        '<span style="font-size:22px;'
+        'font-weight:800;color:#142c58;">'
+        '⏰ 임박 일정</span>'
+
+        '<span style="font-size:12px;color:#64748b;">'
+        'D-Day 3일 이내 일정입니다.'
+        '</span></div>'
+
+        '<div style="'
+        'border:1px solid #dbe5f3;'
+        'border-radius:9px;overflow:hidden;'
+        'background:#ffffff;">'
+
+        '<div class="dashboard-urgent-grid dashboard-urgent-header">'
+        f'{urgent_header_html}'
+        '</div>'
+
+        '<div class="dashboard-urgent-scroll">'
+        f'{urgent_content}'
+        '</div>'
+
+        '</div></div>'
+    )
+
+    with urgent_col:
+        st.markdown(
+            urgent_html,
+            unsafe_allow_html=True
+        )
+
+    # ==================================================
+    # 완료 현황 계산
+    # ==================================================
+    status_total = len(schedules)
+
+    status_completed = sum(
+        1 for schedule in schedules
+        if schedule["완료 여부"]
+    )
+
+    status_pending = status_total - status_completed
+
+    status_completed_rate = (
+        round(status_completed / status_total * 100)
+        if status_total > 0 else 0
+    )
+
+    status_pending_rate = (
+        100 - status_completed_rate
+        if status_total > 0 else 0
+    )
+
+    # ==================================================
+    # 오른쪽 완료 현황 카드
+    # ==================================================
+    status_html = (
+        '<div style="'
+        'height:256px;box-sizing:border-box;'
+        'margin-top:16px;'
+        'background:linear-gradient(135deg,#ffffff,#f5f9ff);'
+        'border:1px solid #bfdbfe;'
+        'border-radius:14px;padding:14px;'
+        'box-shadow:0 3px 10px rgba(37,99,235,0.06);">'
+
+        '<div style="'
+        'display:flex;justify-content:space-between;'
+        'align-items:center;gap:8px;'
+        'margin-bottom:14px;">'
+
+        '<span style="font-size:22px;'
+        'font-weight:800;color:#142c58;">'
+        '✅ 완료 현황</span>'
+
+        '<span style="font-size:12px;color:#64748b;">'
+        '전체 일정의 완료/미완료 현황입니다.'
+        '</span></div>'
+
+        '<div style="'
+        'display:grid;grid-template-columns:1fr 1fr;'
+        'gap:12px;">'
+
+        # 완료 일정
+        '<div style="'
+        'background:linear-gradient(135deg,#ecfdf5,#d1fae5);'
+        'border-radius:12px;padding:30px 10px;'
+        'text-align:center;">'
+
+        '<div style="font-size:15px;font-weight:800;'
+        'color:#15803d;">'
+        '✔ 완료한 일정</div>'
+
+        '<div style="font-size:32px;font-weight:800;'
+        'color:#142c58;margin:10px 0 6px;">'
+        f'{status_completed}개</div>'
+
+        '<div style="font-size:13px;color:#64748b;">'
+        f'전체의 {status_completed_rate}%</div>'
+        '</div>'
+
+        # 미완료 일정
+        '<div style="'
+        'background:linear-gradient(135deg,#fff1f2,#ffe4e6);'
+        'border-radius:12px;padding:30px 10px;'
+        'text-align:center;">'
+
+        '<div style="font-size:15px;font-weight:800;'
+        'color:#dc2626;">'
+        '◷ 미완료 일정</div>'
+
+        '<div style="font-size:32px;font-weight:800;'
+        'color:#142c58;margin:10px 0 6px;">'
+        f'{status_pending}개</div>'
+
+        '<div style="font-size:13px;color:#64748b;">'
+        f'전체의 {status_pending_rate}%</div>'
+        '</div>'
+
+        '</div></div>'
+    )
+
+    with status_col:
+        st.markdown(
+            status_html,
+            unsafe_allow_html=True
+        )
+
+    # ==================================================
+    # 대시보드 하단: 완료한 일정 목록
+    # ==================================================
+    dashboard_completed = sorted(
+        [s for s in schedules if s["완료 여부"]],
+        key=lambda s: (str(s["완료 일시"] or ""), s["id"]),
+        reverse=True
+    )
+
+    # 표 헤더는 고정하고, 완료 일정 3개 이상부터 데이터만 스크롤
+    done_has_scroll = len(dashboard_completed) > 3
+    done_header_class = (
+        "dashboard-done-header has-scroll"
+        if done_has_scroll else "dashboard-done-header"
+    )
+    done_scroll_class = (
+        "dashboard-done-scroll has-scroll"
+        if done_has_scroll else "dashboard-done-scroll"
+    )
+
+    done_headers = [
+        "과목명", "일정명", "마감일", "완료일",
+        "중요도", "예상 소요시간", "상태"
+    ]
+    done_header_cells = "".join(
+        f'<div class="dashboard-done-cell">{escape(h)}</div>'
+        for h in done_headers
+    )
+
+    done_rows = []
+    for item in dashboard_completed:
+        completed_raw = str(item.get("완료 일시") or "")
+        completed_date = (
+            completed_raw.replace("T", " ").split(" ")[0]
+            if completed_raw else "—"
+        )
+        done_values = [
+            item["과목명"], item["일정명"], item["마감일"],
+            completed_date, item["중요도"],
+            format_expected_time(item["예상 소요시간"])
+        ]
+        done_cells = "".join(
+            '<div class="dashboard-done-cell" '
+            f'title="{escape(str(value), quote=True)}">'
+            f'{escape(str(value))}</div>'
+            for value in done_values
+        )
+        done_cells += (
+            '<div class="dashboard-done-cell">'
+            '<span class="dashboard-done-badge">완료</span>'
+            '</div>'
+        )
+        done_rows.append(
+            '<div class="dashboard-done-grid dashboard-done-row">'
+            f'{done_cells}</div>'
+        )
+
+    done_content = "".join(done_rows) if done_rows else (
+        '<div class="dashboard-done-empty">'
+        '완료한 일정이 없습니다.</div>'
+    )
+
+    # ==================================================
+    # 완료 일정 목록 표 디자인
+    # ==================================================
+    st.markdown(
+        """
+        <style>
+        .dashboard-done-grid {
+            display:grid;
+            grid-template-columns:15% 19% 13% 13% 13% 14% 13%;
+            align-items:center;
+            width:100%;
+            box-sizing:border-box;
+        }
+
+        .dashboard-done-cell {
+            min-width:0;
+            height:100%;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            padding:6px 5px;
+            box-sizing:border-box;
+            border-right:1px solid #dbe5f3;
+            text-align:center;
+            overflow:hidden;
+            overflow-wrap:anywhere;
+            line-height:1.3;
+        }
+
+        .dashboard-done-cell:last-child {
+            border-right:none;
+        }
+
+        /* 완료 일정 표 헤더 */
+        .dashboard-done-header {
+            min-height:36px;
+            background:#eaf2ff;
+            border-bottom:1px solid #dbe5f3;
+            color:#203253;
+            font-size:14px;
+            font-weight:800;
+        }
+
+        .dashboard-done-header.has-scroll {
+            padding-right:12px;
+        }
+
+        /* 완료 일정 데이터 행 */
+        .dashboard-done-row {
+            min-height:52px;
+            height:52px;
+            background:#fff;
+            border-bottom:1px solid #dbe5f3;
+            color:#263650;
+            font-size:14px;
+        }
+
+        .dashboard-done-row:last-child {
+            border-bottom:none;
+        }
+
+        /* 완료 일정 목록 전체 스크롤 */
+        .dashboard-done-scroll {
+            max-height:156px;
+            overflow-x:hidden;
+            overflow-y:hidden;
+        }
+
+        .dashboard-done-scroll.has-scroll {
+            overflow-y:auto;
+            scrollbar-gutter:stable;
+            overscroll-behavior:contain;
+            scrollbar-width:auto;
+            scrollbar-color:#60a5fa #eff6ff;
+        }
+
+        .dashboard-done-scroll::-webkit-scrollbar {
+            width:12px;
+        }
+
+        .dashboard-done-scroll::-webkit-scrollbar-track {
+            background:#eff6ff;
+            border-radius:10px;
+        }
+
+        .dashboard-done-scroll::-webkit-scrollbar-thumb {
+            background:#60a5fa;
+            border-radius:10px;
+            border:2px solid #eff6ff;
+        }
+
+        /* 완료 상태 표시 */
+        .dashboard-done-badge {
+            color:#15803d;
+            background:#dcfce7;
+            border-radius:20px;
+            padding:4px 12px;
+            font-size:14px;
+            font-weight:800;
+        }
+
+        /* 완료 일정이 없을 때 */
+        .dashboard-done-empty {
+            min-height:78px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color:#64748b;
+            font-size:14px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # ==================================================
+    # 완료한 일정 목록 카드 출력
+    # ==================================================
+    done_html = (
+        '<div style="'
+        'margin-top:-14px;padding:14px;'
+        'min-height:270px;box-sizing:border-box;'
+        'border:1px solid #bfdbfe;border-radius:14px;'
+        'background:linear-gradient(135deg,#ffffff,#f5f9ff);'
+        'box-shadow:0 3px 10px rgba(37,99,235,0.06);">'
+
+        '<div style="display:flex;align-items:center;'
+        'justify-content:space-between;gap:10px;'
+        'margin-bottom:12px;">'
+
+        '<div style="display:flex;align-items:center;gap:10px;">'
+
+        '<span style="background:#2563eb;color:white;'
+        'border-radius:7px;padding:4px 9px;'
+        'font-size:19px;font-weight:800;">✓</span>'
+
+        '<span style="font-size:22px;font-weight:800;'
+        'color:#142c58;">완료한 일정 목록</span>'
+
+        '</div>'
+
+        '<span style="font-size:12px;color:#64748b;">'
+        '완료 처리된 일정 목록입니다.</span>'
+
+        '</div>'
+
+        '<div style="background:#ffffff;'
+        'border:1px solid #dbe5f3;'
+        'border-radius:9px;overflow:hidden;">'
+
+        f'<div class="dashboard-done-grid {done_header_class}">'
+        f'{done_header_cells}</div>'
+
+        f'<div class="{done_scroll_class}">{done_content}</div>'
+
+        '</div></div>'
+    )
+
+    st.markdown(
+        done_html,
+        unsafe_allow_html=True
+    )
 
 
 # ==================================================
@@ -2110,6 +3843,26 @@ elif menu == "일정 등록":
     </style>
     """, unsafe_allow_html=True)   
 
+    # 중요도 최초 기본값은 보통
+    if "register_importance" not in st.session_state:
+        st.session_state["register_importance"] = "보통"
+
+    # 마감일 최초 기본값은 오늘 날짜
+    if "register_deadline" not in st.session_state:
+        st.session_state["register_deadline"] = date.today()
+
+    # 등록 성공 후 다음 실행에서 입력값 초기화
+    if st.session_state.pop("register_reset_pending", False):
+        st.session_state["register_subject"] = ""
+        st.session_state["register_schedule_name"] = ""
+        st.session_state["register_deadline"] = date.today()
+        st.session_state["register_importance"] = "보통"
+        st.session_state.time_hours = 1
+        st.session_state.hours_input = "1"
+        st.session_state.hours_input_widget = "1"
+        st.session_state.hours_warning = None
+        st.session_state.hours_input_invalid = False
+
     with st.container(key="register_shell", gap=None):
         with st.container(key="register_card", border=True, gap="small"):
             st.markdown(
@@ -2161,11 +3914,15 @@ elif menu == "일정 등록":
             )
             with subject_col:
                 subject = st.text_input(
-                    "과목명", placeholder="예: 캡스톤디자인"
+                    "과목명",
+                    placeholder="예: 캡스톤디자인",
+                    key="register_subject"
                 )
             with schedule_col:
                 schedule_name = st.text_input(
-                    "일정명", placeholder="예: 주간 개인 활동 리포트 제출"
+                    "일정명",
+                    placeholder="예: 주간 개인 활동 리포트 제출",
+                    key="register_schedule_name"
                 )
 
             st.divider()
@@ -2190,10 +3947,13 @@ elif menu == "일정 등록":
                 2, gap="medium", vertical_alignment="bottom", wrap=True
             )
             with deadline_col:
-                deadline = st.date_input("마감일", value=date.today())
+                deadline = st.date_input(
+                    "마감일", key="register_deadline"
+                )
             with importance_col:
                 importance = st.selectbox(
-                    "중요도", ["높음", "보통", "낮음"]
+                    "중요도", ["높음", "보통", "낮음"],
+                    key="register_importance"
                 )
 
             # 기존 예상 소요시간 처리 및 위젯 키 유지
@@ -2271,17 +4031,24 @@ elif menu == "일정 등록":
             current_hours = get_time_hours()
             st.session_state.time_hours = current_hours
 
-            # 경고 또는 등록 결과가 있을 때만 하단 영역 표시
+            # 등록 성공 알림은 초기화 후 한 번 표시
+            register_success_message = st.session_state.pop(
+                "register_success_message", None
+            )
             footer_divider = st.empty()
             footer_notice = StyledAlertSlot()
 
-            if st.session_state.get("hours_warning") or register_clicked:
+            if (st.session_state.get("hours_warning")
+                    or register_clicked or register_success_message):
                 footer_divider.divider()
 
-            if st.session_state.get("hours_warning"):
+            if register_success_message:
+                footer_notice.success(register_success_message)
+            elif st.session_state.get("hours_warning"):
                 footer_notice.warning(
                     st.session_state["hours_warning"]
-                )                       
+                )
+                   
 
             # 이 아래의 등록 검증·DB 저장·점수 계산은 기존 코드 유지
             if register_clicked and not st.session_state.get(
@@ -2361,11 +4128,13 @@ elif menu == "일정 등록":
                         expected_time
                     )
 
-                    # 등록 성공 알림: 단색 체크 아이콘 적용
-                    footer_notice.success(
+                    # 등록 성공 후 입력 초기화를 예약하고 다시 실행
+                    st.session_state["register_success_message"] = (
                         f"{schedule_target(subject, schedule_name)} "
                         "일정이 정상적으로 등록되었습니다."
                     )
+                    st.session_state["register_reset_pending"] = True
+                    st.rerun()
 # ==================================================
 # 일정 목록: 최종 시안에 따른 UI 정렬·스크롤·검색
 # ==================================================
